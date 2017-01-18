@@ -54,59 +54,60 @@ object streamingTest {
 
     val parserClass = ReflectUtil.getSingletonObject[ParserTrait](className+"$")
 
+//    def createContext() ={
+      val jsonKeys =JsonKeys(keys)
+      val keysString = jsonKeys.getKeyString
+      println("待解析的字段为: "+keysString)
 
-    val jsonKeys =JsonKeys(keys)
-    val keysString = jsonKeys.getKeyString
-    println("待解析的字段为: "+keysString)
+      val keysNum = keysString.trim.split(",").length
+      val schema = StructType(keysString.trim.split(",").map(fieldName => StructField(fieldName, StringType, true))) //埋点解析字段schema
 
-    val keysNum = keysString.trim.split(",").length
-    val schema = StructType(keysString.trim.split(",").map(fieldName => StructField(fieldName, StringType, true))) //埋点解析字段schema
-
-    val brokerList = KafkaManger.getBrokerList(zkConnect, kafkaRoot)
-    println("current brokerList:"+brokerList)
+      val brokerList = KafkaManger.getBrokerList(zkConnect, kafkaRoot)
+      println("current brokerList:"+brokerList)
 
 
-    val topicsSet = topics.split(",").toSet
-    println(topicsSet.toArray.mkString("-"))
+      val topicsSet = topics.split(",").toSet
+      println(topicsSet.toArray.mkString("-"))
 
-    val upstateDir = s"$appDataPath/data"
-    val upstateDir_bak = s"$appDataPath/data_bak"
-    val offsetCheckDir = s"$appDataPath/offset/offset.txt"
-    val initDir = s"$appDataPath/init"
+      val upstateDir = s"$appDataPath/data"
+      val upstateDir_bak = s"$appDataPath/data_bak"
+      val offsetCheckDir = s"$appDataPath/offset/offset.txt"
+      val initDir = s"$appDataPath/init"
 
-    val offset =HdfsUtil.readHdfs(offsetCheckDir,new Configuration())
-    val offsetInfo = OffsetManager.getOffsetInfo(offset)
-    //    println(s"zookeeper offset:$offset")
-    val startOffset = OffsetManager.getStartOffset(brokerList,topics,offsetInfo)
-    val kafkaParams = Map[String, String]("metadata.broker.list" -> brokerList)
-    val messageHandler = (mmd: MessageAndMetadata[String, String]) => (mmd.topic,mmd.partition, mmd.offset, mmd.message) //messageHandler 为获取到的日志处理函数
+      val offset =HdfsUtil.readHdfs(offsetCheckDir,new Configuration())
+      val offsetInfo = OffsetManager.getFromOffset(offset)
+      //    println(s"zookeeper offset:$offset")
+      val startOffset = OffsetManager.getStartOffset(brokerList,topics,offsetInfo)
+      val kafkaParams = Map[String, String]("metadata.broker.list" -> brokerList)
+      val messageHandler = (mmd: MessageAndMetadata[String, String]) => (mmd.topic,mmd.partition, mmd.offset, mmd.message) //messageHandler 为获取到的日志处理函数
 
-    HdfsUtil.rmDir(s"$appDataPath/checkpoint",new Configuration())
-    HdfsUtil.copy(upstateDir,initDir,false,true,new Configuration())
-    val interval=Seconds(35)
-    val conf = new SparkConf().setMaster("local[*]").setAppName(appName)
+      HdfsUtil.rmDir(s"$appDataPath/checkpoint",new Configuration())
+      HdfsUtil.copy(upstateDir,initDir,false,true,new Configuration())
 
-    def createContext() ={
+      val interval=Seconds(35)
+      val conf = new SparkConf().setMaster("local[*]").setAppName(appName)
       val ssc = new StreamingContext(conf,interval) //spark streaming context
       val kafkaStream1 = KafkaUtils.createDirectStream[String, String, StringDecoder, StringDecoder, (String,Int, Long, String)](ssc, kafkaParams, startOffset, messageHandler)
-      kafkaStream1.print()
+      kafkaStream1.print(1000)
+      kafkaStream1.count().print()
       val kafkaStream2 = kafkaStream1.map(line=>line._4).map(line=>line.replace("\\t","\\\\t")).filter(line=>FilterObject.jsonFilter(line))
       val kafkaStream3 = kafkaStream2.transform{rdd=>parserClass.logparser(rdd,jsonKeys)}
       //    val directory = s"$initDir/data"
       //    val pathFilter=(path: Path)=>true
       //    val checkDstream = ssc.fileStream[LongWritable, Text, TextInputFormat](directory,pathFilter(_),false)
       //      .map(_._2.toString)
-      kafkaStream3.count().print()
+//      kafkaStream3.count().print()
 
 
       var offsetRanges = Array[OffsetRange]()
       kafkaStream1.foreachRDD { rdd =>
         offsetRanges = rdd.asInstanceOf[HasOffsetRanges].offsetRanges
+        rdd.foreach(println)
         offsetRanges.foreach(println(_))
       }
-      ssc
-    }
-    val ssc=StreamingContext.getOrCreate(checkpointPath,createContext)
+//      ssc
+//    }
+//    val ssc=StreamingContext.getOrCreate(checkpointPath,createContext)
     ssc.start()
     ssc.awaitTermination()
   }

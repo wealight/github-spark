@@ -31,7 +31,7 @@ object SparkTest {
 //    df.foreach(println)
 //    sqlContext.read
     val seq = Seq(1 to 100:_*)
-    sc.parallelize(seq,5).foreachPartition {
+    sc.parallelize(List(1,2,3,4,5,6),2).foreachPartition {
       par => println(s"partitions id:${TaskContext.getPartitionId()}  data:${par.mkString(",")}")
     }
 
@@ -39,12 +39,30 @@ object SparkTest {
 
     val rdd = sc.parallelize(seq.zip(seq2),5)
     rdd.distinct()
-    rdd.partitionBy(new HashPartitioner(5)).foreachPartition {
+    rdd.foreachPartition {
       par => println(s"partitions id:${TaskContext.getPartitionId()}  data:${par.mkString(",")}")
     }
 
     rdd.partitionBy(new RangePartitioner(5,rdd, false)).foreachPartition {
       par => println(s"partitions id:${TaskContext.getPartitionId()}  data:${par.mkString(",")}")
     }
+sc.textFile("1.txt").map(_+100).collect()
+
+    import  scala.math
+    val seqOp=(a:Int,b:Int)=>{
+      println(s"seqOp  1st:$a    2nd:$b   answer:${math.max(a, b)}")
+      math.max(a,b)
+    }
+
+    val combOp=(a:Int,b:Int)=>{
+      println(s"combOp  1st:$a    2nd:$b   answer:${a+b}")
+      a+b
+    }
+
+    sc.parallelize(Seq((1,7),(2,2),(6,4),(2,1),(2,2),(2,5))).sortByKey(true,1).foreach(println)
+    val rdd1 = sc.parallelize(Seq((1,7),(1,4),(2,1),(2,2),(2,5),(4,6)))
+    val rdd2 = sc.parallelize(Seq((1,4),(2,1),(2,2),(3,5)))
+     rdd1.cogroup(rdd2).sortByKey(true,1).foreach(println)
+
   }
 }

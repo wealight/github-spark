@@ -1,5 +1,8 @@
 package cn.wanda.util
 
+import java.text.SimpleDateFormat
+import java.util.Date
+
 import com.alibaba.fastjson.{JSON, JSONArray, JSONObject}
 import kafka.common.TopicAndPartition
 import org.apache.log4j.Logger
@@ -43,11 +46,12 @@ object OffsetManager {
     val jsonArray: JSONArray = new JSONArray
     for (offsetRange <- offsetRanges) {
       val jsonObject=new JSONObject()
+      jsonObject.put("date", (new SimpleDateFormat("yyyy-MM-dd HH:mm:ss")).format(new Date()))
+      jsonObject.put("timestamp", System.currentTimeMillis)
       jsonObject.put("topic",offsetRange.topic)
       jsonObject.put("partitions", offsetRange.partition)
       jsonObject.put("fromOffset", offsetRange.fromOffset)
       jsonObject.put("untilOffset", offsetRange.untilOffset)
-      jsonObject.put("timestamp", System.currentTimeMillis)
       jsonArray.add(jsonObject)
     }
     jsonArray
@@ -89,7 +93,7 @@ object OffsetManager {
     }
   }
 
-  def getOffsetInfo(offset:String)={
+  def getFromOffset(offset:String)={
     val offsetMap = scala.collection.mutable.Map[TopicAndPartition,Long]()
     try {
       val jSONArr = JSON.parseArray(offset)
