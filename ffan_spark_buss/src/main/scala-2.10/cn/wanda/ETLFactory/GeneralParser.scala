@@ -45,7 +45,7 @@ object GeneralParser extends ParserTrait with Serializable{
 object GeneralParser2 extends ParserTrait with Serializable{
   def logparser(rdd:RDD[String], jsonKeys: JsonKeys)={
     val logRdd = rdd.filter(line=>FilterObject.jsonFilter(line) && line.contains("message") && line.contains("event_log") && !line.contains("auto_record_point"))
-    .map(line=>jsonMsgPutKey(line,"receive_time"))
+    .map(line=>jsonMsgPutKey(line,"@shanghaiTimestamap"))
     .filter(line=>FilterObject.jsonFilter(line))
     .flatMap(line=>(new GeneralLogParse()).parser(JSON.parseObject(line), jsonKeys))
     logRdd
@@ -61,7 +61,7 @@ object GeneralParser2 extends ParserTrait with Serializable{
       //首先获取json当中的嵌套为字符串 然后该字符串再转换为jsonObject 解决老版app当中/的问题
       val msgJsonObjs = jSONObject1.getString("message")
       val msgJsonObj=JSON.parseObject(msgJsonObjs)
-      msgJsonObj.put(key,getJsonValue(jSONObject1,key))
+      msgJsonObj.put(key.replace("@",""),getJsonValue(jSONObject1,key))
       msgJsonObj.toJSONString
     }
     catch {

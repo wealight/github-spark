@@ -1,5 +1,7 @@
 package cn.wanda.util
 
+import org.apache.spark.sql.types.{StringType, StructField, StructType}
+
 /**
   * Created by weishuxiao on 16/12/15.
   */
@@ -75,4 +77,8 @@ object JsonKeys{
     new JsonKeys(keyString)
   }
 
+  def getStructType(keysString:String,separator:String=",")={
+    StructType(keysString.trim.split(separator)
+      .map(fieldName => StructField(fieldName, StringType, true)))
+  }
 }

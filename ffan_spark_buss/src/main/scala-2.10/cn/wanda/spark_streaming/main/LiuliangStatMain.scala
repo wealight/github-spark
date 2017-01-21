@@ -13,7 +13,6 @@ import org.apache.hadoop.io.{Text, LongWritable}
 import org.apache.hadoop.mapreduce.lib.input.TextInputFormat
 import org.apache.log4j.{Level, Logger}
 import org.apache.spark.{SparkContext, SparkConf, TaskContext}
-import org.apache.spark.sql.types.{StringType, StructField, StructType}
 import org.apache.spark.sql.{Row, SQLContext}
 import org.apache.spark.streaming.kafka.{HasOffsetRanges, KafkaUtils, OffsetRange}
 import org.apache.spark.streaming.{Seconds, StreamingContext}
@@ -26,120 +25,142 @@ object LiuliangStatMain {
   def main(args: Array[String]): Unit = {
 
     Logger.getLogger("org").setLevel(Level.ERROR)
-    val propObject = PropertiesUtil.getPropObject("/Users/weishuxiao/Documents/spark/ffan_spark_buss/src/main/resources/Spark_streaming_double_dan_liuliang_stat.properties")
-    val appName = propObject.getProperty("spark.streaming.appName")
-    val zkConnect = propObject.getProperty("spark.streaming.zkConnect")
-    val kafkaRoot = propObject.getProperty("spark.streaming.kafkaRoot")
-    val topics    = propObject.getProperty("spark.streaming.topics")
-    val className = propObject.getProperty("spark.streaming.parser.className")
-    val checkpointPath = propObject.getProperty("spark.streaming.checkpointPath")
-    val jdbcUrl = propObject.getProperty("spark.target.jdbc")
-    val jdbcSql = propObject.getProperty("spark.target.jdbc.query")
-    val keys      = propObject.getProperty("parser.keys")
-    val appDataPath      = propObject.getProperty("spark.streaming.appDataPath")
-    val date      = propObject.getProperty("load.date")
-
-    val jsonKeys =JsonKeys(keys)
+    val propBean =new PropertiesBean("/Users/weishuxiao/Documents/spark/ffan_spark_buss/src/main/resources/Spark_streaming_double_dan_liuliang_stat.properties")
+    val jsonKeys =JsonKeys(propBean.keys)
     val keysString = jsonKeys.getKeyString
     println("待解析的字段为: "+keysString)
 
-    val keysNum = keysString.trim.split(",").length
-    val schema = StructType(keysString.trim.split(",").map(fieldName => StructField(fieldName, StringType, true))) //埋点解析字段schema
+    val schema =JsonKeys.getStructType(keysString,",")
 
-    val brokerList = KafkaManger.getBrokerList(zkConnect, kafkaRoot)
+    val brokerList = KafkaManger.getBrokerList(propBean.zkConnect, propBean.kafkaRoot)
     println("current brokerList:"+brokerList)
 
-    val topicsSet = topics.split(",").toSet
+    val topicsSet = propBean.topics.split(",").toSet
     println(topicsSet.toArray.mkString("-"))
 
-    val upstateDir = s"$appDataPath/data"
-    val upstateDir_bak = s"$appDataPath/data_bak"
-    val offsetCheckDir = s"$appDataPath/offset/offset.txt"
-    val initDir = s"$appDataPath/init"
+    val upstateDir     = s"${propBean.appDataPath}/data"
+    val upstateDir_bak = s"${propBean.appDataPath}/data_bak"
+    val offsetCheckDir = s"${propBean.appDataPath}/offset/offset.txt"
+    val initDir        = s"${propBean.appDataPath}/init"
 
-    val offset =HdfsUtil.readHdfs(offsetCheckDir,new Configuration())
-    val offsetInfo = OffsetManager.getFromOffset(offset)
+
+    val offsetInfo = OffsetManager.getFromOffset(HdfsUtil.readHdfs(offsetCheckDir,new Configuration()))
     //    println(s"zookeeper offset:$offset")
-    val startOffset = OffsetManager.getStartOffset(brokerList,topics,offsetInfo)
-    val kafkaParams = Map[String, String]("metadata.broker.list" -> brokerList)
+    val startOffset    = OffsetManager.getStartOffset(brokerList,propBean.topics,offsetInfo)
+    val kafkaParams    = Map[String, String]("metadata.broker.list" -> brokerList)
     val messageHandler = (mmd: MessageAndMetadata[String, String]) => (mmd.topic, mmd.offset, mmd.message) //messageHandler 为获取到的日志处理函数
-    val parserClass = ReflectUtil.getSingletonObject[ParserTrait](className+"$")
-    //    val rddFunctions = new RddFunctions
+    val parserClass    = ReflectUtil.getSingletonObject[ParserTrait](propBean.className+"$")
 
-    HdfsUtil.rmDir(s"$appDataPath/checkpoint",new Configuration())
+    HdfsUtil.rmDir(s"${propBean.appDataPath}/checkpoint",new Configuration())
     HdfsUtil.copy(upstateDir,initDir,false,true,new Configuration())
 
-    val conf = new SparkConf().setMaster("local[*]").setAppName(appName)
+    val conf = new SparkConf().setMaster("local[*]").setAppName(propBean.appName)
     conf.set("spark.streaming.fileStream.minRememberDuration", "25920000s")
     val interval=Seconds(5)
     val ssc = new StreamingContext(conf,interval) //spark streaming context
     val directKafkaStream = KafkaUtils.createDirectStream[String, String, StringDecoder, StringDecoder, (String, Long, String)](ssc, kafkaParams, startOffset, messageHandler)
-    val jsonStream = directKafkaStream.map(line=>line._3).map(line=>line.replace("\\","\\\\")).filter(line=>FilterObject.jsonFilter(line))
-    val eleDstream = jsonStream.transform{rdd=>parserClass.logparser(rdd,jsonKeys)}
-    val realDtream = eleDstream.map(line=>line.split("\t")).map(line=> ((line(0),RddFunctions.unixtime2date(line(3),"yyyy-MM-dd HH:mm"),line(2)),1))
+    val eleDstream = directKafkaStream
+      .map(line=>line._3)
+      .map(line=>line.replace("\\t","\\\\t"))
+      .filter(line=>FilterObject.jsonFilter(line))
+      .transform{rdd=>parserClass.logparser(rdd,jsonKeys)}
+
+    val sqlContext = SQLContext.getOrCreate(ssc.sparkContext)
+
+    val rowRDD = eleDstream.transform{
+      rdd =>
+        val rowRDD = rdd.map(_.split("\t",-1)).map(p =>Row(p:_*))
+        val logDF = sqlContext.createDataFrame(rowRDD, schema)
+        logDF.registerTempTable(propBean.precessSourceTable)
+        val statDf = sqlContext.sql(propBean.precessSql)
+        statDf.rdd
+    }
+    rowRDD.print()
+
+    rowRDD.foreachRDD{
+      rdd=>
+        val logDF = sqlContext.createDataFrame(rdd, schema)
+        logDF.registerTempTable(propBean.batchComputeSourceTable)
+        val statDf = sqlContext.sql(propBean.batchComputeSql)
+        statDf.show()
+        statDf.coalesce(2).foreachPartition{
+          partition=>{
+            if (!partition.isEmpty){
+              JvmIdGetter.IdGetter()
+              val connectionPool =MysqlConnectionPool.pool
+              val connection = connectionPool.filter(conn=>conn!= None).get.getConnection
+              MysqlConnection.insertIntoMySQL(connection,propBean.jdbcSql,partition)
+              MysqlConnection.closeConnection(connection)
+            }
+          }
+        }
+    }
+
     val directory = s"$initDir/data"
-    val reg="""(.*),(.*),(.*),(.*)""".r //用于将tuple形式的字符串解析
-    val pathFilter=(path: Path)=>true
-    val checkDstream = ssc.fileStream[LongWritable, Text, TextInputFormat](directory,pathFilter(_),false)
+    val reg="""(.*),(.*)""".r //用于将tuple形式的字符串解析
+
+    //读取存档文件  作为初始化数据
+    val checkDstream = ssc.fileStream[LongWritable, Text, TextInputFormat](directory,(path: Path)=>true,false)
       .map(_._2.toString)
       .filter(line=>line.length>10)
       .map{
         line=>
-          val reg(event_id,time,device_id,pv)=line.replaceAll("\\(|\\)","")
-          ((event_id,time,device_id),pv.toInt)
+          val lineArr = line.split("\\t")
+          (lineArr(0),lineArr(1))
       }
 
-    val prop = new Properties
-    prop.put("user","root")
-    prop.put("password","881234")
+    val holdedRdd =
+      {
+        rowRDD.transform
+        {
+          rdd=>
+            val logDF = sqlContext.createDataFrame(rdd, schema)
+            logDF.registerTempTable(propBean.preUpdateKeyStateTable)
+            val statDf = sqlContext.sql(propBean.preUpdateKeyStateSql)
+            statDf.rdd
+        }
+          .map(line=>(line(0).toString,line(1).toString))
+      }
+        .union(checkDstream)
+        .window(interval*3,interval*3)
+        .updateStateByKey[String](RddFunctions.stateSumbykey)
 
-    eleDstream
+
+    val holdedDataSchema =JsonKeys.getStructType(propBean.updateStateComputeFields,",")
+
+    holdedRdd.map(ele=>ele._1+"\t"+ele._2).window(interval*3,interval*3)
       .foreachRDD{
-        rdd =>
-          val sqlContext = SQLContext.getOrCreate(rdd.sparkContext)
-          val rowRDD = rdd.map(_.split("\t",-1)).map(p =>Row(p:_*))
-          val logDF = sqlContext.createDataFrame(rowRDD, schema)
-          logDF.registerTempTable("event_log")
-          val statDf = sqlContext.sql("select from_unixtime(receive_time/1000,\"yyyy-MM-dd HH:mm\"),event_id,count(*)pv,count(distinct device_id) uv from event_log group by event_id,from_unixtime(receive_time/1000,\"yyyy-MM-dd HH:mm\")")
-          statDf.show()
-          //            statDf.write.mode("append").jdbc("jdbc:mysql://localhost:3306/mysqltest?useUnicode=true&characterEncoding=utf-8&useSSL=false","sparkTest",prop)
-          statDf.coalesce(2).foreachPartition{
+        rdd=>
+          //将历史存档状态保存到HDFS
+          HdfsUtil.mkDir(s"$upstateDir_bak",new Configuration())
+          rdd.foreachPartition{
             partition=>{
-              if (!partition.isEmpty){
-                JvmIdGetter.IdGetter()
-                val connectionPool =MysqlConnectionPool.pool
-                val connection = connectionPool.filter(conn=>conn!= None).get.getConnection
-                MysqlConnection.insertIntoMySQL(connection,jdbcSql,partition)
-                MysqlConnection.closeConnection(connection)
-              }
+              val pathString = s"$upstateDir_bak/spark-streaming-${propBean.appName}-${TaskContext.getPartitionId()}"
+              HdfsUtil.write2Hdfs(pathString,partition.mkString("","\n","\n"),new Configuration())
             }
           }
+          HdfsUtil.rmDir(s"$upstateDir",new Configuration())
+          HdfsUtil.mvDir(s"$upstateDir_bak",s"$upstateDir",true,new Configuration())
+          //对历史累计数据进行统计
+
+          val rddTmp = rdd.map(_.split("\\t|\\|")).map(p =>Row(p:_*))
+          val logDF = sqlContext.createDataFrame(rddTmp, holdedDataSchema)
+          logDF.registerTempTable(propBean.updateStateComputeTable)
+          val statDf = sqlContext.sql(propBean.updateStateComputeSql)
+          statDf.show()
       }
 
-    val holdedRdd = realDtream.union(checkDstream).window(interval,interval).reduceByKey(_+_).updateStateByKey[Int](RddFunctions.stateSumbykey)
-    holdedRdd.foreachRDD{
-      rdd=>
-        HdfsUtil.mkDir(s"$upstateDir_bak",new Configuration())
-        rdd.foreachPartition{
-          partition=>{
-            val pathString = s"$upstateDir_bak/spark-streaming-$appName-${TaskContext.getPartitionId()}"
-            HdfsUtil.write2Hdfs(pathString,partition.mkString("","\n","\n"),new Configuration())
-          }
-        }
-        HdfsUtil.rmDir(s"$upstateDir",new Configuration())
-        HdfsUtil.mvDir(s"$upstateDir_bak",s"$upstateDir",true,new Configuration())
-    }
-
-    ssc.checkpoint(s"$appDataPath/checkpoint")
+    ssc.checkpoint(s"${propBean.appDataPath}/checkpoint")
 
     // OffsetRange当中主要字段包含 topic,partition,fromOffset,untilOffset
     //参考http://www.tuicool.com/articles/vaUzquJ
     var offsetRanges = Array[OffsetRange]()
-    directKafkaStream.foreachRDD { rdd =>
-      offsetRanges = rdd.asInstanceOf[HasOffsetRanges].offsetRanges
-      offsetRanges.foreach(println(_))
-      val offsetStr = OffsetManager.offsetRanges2String(offsetRanges)
-      HdfsUtil.write2Hdfs(offsetCheckDir,offsetStr, new Configuration())
+    directKafkaStream.foreachRDD {
+      rdd =>
+        offsetRanges = rdd.asInstanceOf[HasOffsetRanges].offsetRanges
+        offsetRanges.foreach(println(_))
+        val offsetStr = OffsetManager.offsetRanges2String(offsetRanges)
+        HdfsUtil.write2Hdfs(offsetCheckDir,offsetStr, new Configuration())
     }
     ssc.start()
     ssc.awaitTermination()
