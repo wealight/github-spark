@@ -3,6 +3,8 @@ package cn.wanda.util
 import java.text.SimpleDateFormat
 import java.util.Date
 
+import org.apache.hadoop.fs.Path
+
 /**
   * Created by weishuxiao on 16/11/25.
   */
@@ -54,6 +56,20 @@ object RddFunctions extends Serializable{
       minutesDateFormat.format(new Date(stamp))
     } catch {
       case ex: Exception => minutesDateFormat.format(new Date()) //如果转换异常则将时间标记为当前程序时间
+    }
+  }
+
+  /**
+    * fileStream 读入文件过滤函数
+    * @param path hadfs路径
+    * 主要是过滤_SUCCESS文件
+   */
+
+  def pathFilter(path: Path)={
+    val reg=""".*/part-\d+""".r
+    reg.findAllIn(path.toString).length match {
+      case 1 => true
+      case _=>false
     }
   }
 

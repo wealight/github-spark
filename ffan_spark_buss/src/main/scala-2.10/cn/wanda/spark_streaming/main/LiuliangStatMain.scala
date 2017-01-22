@@ -96,11 +96,8 @@ object LiuliangStatMain {
         }
     }
 
-    val directory = s"$initDir/data"
-    val reg="""(.*),(.*)""".r //用于将tuple形式的字符串解析
-
     //读取存档文件  作为初始化数据
-    val checkDstream = ssc.fileStream[LongWritable, Text, TextInputFormat](directory,(path: Path)=>true,false)
+    val checkDstream = ssc.fileStream[LongWritable, Text, TextInputFormat](s"$initDir/data",RddFunctions.pathFilter(_),false)
       .map(_._2.toString)
       .filter(line=>line.length>10)
       .map{
@@ -125,24 +122,21 @@ object LiuliangStatMain {
         .window(interval*3,interval*3)
         .updateStateByKey[String](RddFunctions.stateSumbykey)
 
+    ssc.checkpoint(s"${propBean.appDataPath}/checkpoint")
+    holdedRdd.checkpoint(interval*9)
+
 
     val holdedDataSchema =JsonKeys.getStructType(propBean.updateStateComputeFields,",")
-
     holdedRdd.map(ele=>ele._1+"\t"+ele._2).window(interval*3,interval*3)
       .foreachRDD{
         rdd=>
           //将历史存档状态保存到HDFS
-          HdfsUtil.mkDir(s"$upstateDir_bak",new Configuration())
-          rdd.foreachPartition{
-            partition=>{
-              val pathString = s"$upstateDir_bak/spark-streaming-${propBean.appName}-${TaskContext.getPartitionId()}"
-              HdfsUtil.write2Hdfs(pathString,partition.mkString("","\n","\n"),new Configuration())
-            }
-          }
+          val logger = Logger.getLogger(LiuliangStatMain.getClass.getName)
+          logger.info("updateStateByKey保存的历史数据写入到HDFS")
           HdfsUtil.rmDir(s"$upstateDir",new Configuration())
-          HdfsUtil.mvDir(s"$upstateDir_bak",s"$upstateDir",true,new Configuration())
-          //对历史累计数据进行统计
+          rdd.saveAsTextFile(upstateDir)
 
+          //对历史累计数据进行统计
           val rddTmp = rdd.map(_.split("\\t|\\|")).map(p =>Row(p:_*))
           val logDF = sqlContext.createDataFrame(rddTmp, holdedDataSchema)
           logDF.registerTempTable(propBean.updateStateComputeTable)
@@ -150,7 +144,6 @@ object LiuliangStatMain {
           statDf.show()
       }
 
-    ssc.checkpoint(s"${propBean.appDataPath}/checkpoint")
 
     // OffsetRange当中主要字段包含 topic,partition,fromOffset,untilOffset
     //参考http://www.tuicool.com/articles/vaUzquJ
